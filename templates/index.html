@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker BuildX Builder</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; background: #f7f9fc; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .panel { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .row { display: flex; gap: 12px; flex-wrap: wrap; }
+        .field { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+        input, select, textarea, button { padding: 10px; font-size: 14px; }
+        button { background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+        .platform-list { display: flex; gap: 10px; flex-wrap: wrap; }
+        .platform-item { display: flex; align-items: center; gap: 6px; }
+        #logs { background: #0f172a; color: #d1d5db; padding: 12px; border-radius: 6px; height: 420px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
+        .build-card { border: 1px solid #e5e7eb; padding: 12px; border-radius: 8px; margin-top: 10px; }
+        .status { font-weight: bold; }
+        .status.running { color: #2563eb; }
+        .status.success { color: #16a34a; }
+        .status.failed { color: #dc2626; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="panel">
+        <h2>Docker BuildX 构建工具</h2>
+        <div id="docker-status">检测 Docker 状态中...</div>
+    </div>
+
+    <div class="panel">
+        <div class="row">
+            <div class="field">
+                <label>项目目录</label>
+                <input id="project-dir" type="text" placeholder="请选择项目目录">
+                <input id="dir-picker" type="file" webkitdirectory directory multiple style="display:none;">
+                <button onclick="pickDirectory()">选择目录</button>
+            </div>
+            <div class="field">
+                <label>Dockerfile 路径</label>
+                <input id="dockerfile" type="text" value="Dockerfile" placeholder="Dockerfile">
+            </div>
+            <div class="field">
+                <label>镜像名称</label>
+                <input id="image-name" type="text" placeholder="myimage">
+            </div>
+            <div class="field">
+                <label>镜像标签</label>
+                <input id="image-tag" type="text" value="latest">
+            </div>
+        </div>
+        <br>
+        <div class="field">
+            <label>构建参数（逗号分隔）</label>
+            <input id="build-args" type="text" placeholder="例如: HTTP_PORT=8080,ENV=prod">
+        </div>
+        <br>
+        <div>
+            <label><strong>选择平台：</strong></label>
+            <div id="platform-list" class="platform-list"></div>
+        </div>
+        <br>
+        <div class="field">
+            <label>
+                <input id="push-image" type="checkbox">
+                构建后推送到镜像仓库
+            </label>
+        </div>
+        <button onclick="startBuild()">开始构建</button>
+    </div>
+
+    <div class="panel">
+        <h3>构建记录</h3>
+        <div id="build-list"></div>
+    </div>
+
+    <div class="panel">
+        <h3>实时日志</h3>
+        <div id="logs">等待构建任务...</div>
+    </div>
+</div>
+
+<script>
+let currentBuildId = null;
+
+async function checkDockerStatus() {
+    const res = await fetch('/api/docker/status');
+    const data = await res.json();
+    const el = document.getElementById('docker-status');
+    el.textContent = data.ok ? 'Docker 正常运行' : `Docker 异常: ${data.message}`;
+    el.style.color = data.ok ? '#16a34a' : '#dc2626';
+}
+
+async function loadPlatforms() {
+    const res = await fetch('/api/platforms');
+    const data = await res.json();
+    const container = document.getElementById('platform-list');
+    container.innerHTML = '';
+    data.platforms.forEach(platform => {
+        const div = document.createElement('label');
+        div.className = 'platform-item';
+        div.innerHTML = `<input type="checkbox" value="${platform}" checked> ${platform}`;
+        container.appendChild(div);
+    });
+}
+
+async function startBuild() {
+    const projectDir = document.getElementById('project-dir').value.trim();
+    const dockerfile = document.getElementById('dockerfile').value.trim();
+    const imageName = document.getElementById('image-name').value.trim();
+    const imageTag = document.getElementById('image-tag').value.trim();
+    const buildArgs = document.getElementById('build-args').value.trim();
+    const push = document.getElementById('push-image').checked;
+    const selectedPlatforms = [...document.querySelectorAll('#platform-list input:checked')].map(i => i.value);
+
+    if (!projectDir || !imageName || selectedPlatforms.length === 0) {
+        alert('请填写项目目录、镜像名称并至少选择一个架构');
+        return;
+    }
+
+    const res = await fetch('/api/builds', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            project_dir: projectDir,
+            dockerfile,
+            image_name: imageName,
+            image_tag: imageTag,
+            build_args: buildArgs,
+            platforms: selectedPlatforms,
+            push
+        })
+    });
+
+    const json = await res.json();
+    if (!res.ok) {
+        alert(json.error || '启动失败');
+        return;
+    }
+
+    currentBuildId = json.build_id;
+    await loadBuilds();
+    await loadLogs();
+}
+
+async function loadBuilds() {
+    const res = await fetch('/api/builds');
+    const data = await res.json();
+    const container = document.getElementById('build-list');
+    container.innerHTML = '';
+    data.builds.slice().reverse().forEach(build => {
+        const card = document.createElement('div');
+        card.className = 'build-card';
+        card.innerHTML = `
+            <div><strong>${build.image_name}:${build.image_tag}</strong></div>
+            <div>目录: ${build.project_dir}</div>
+            <div>平台: ${build.platforms.join(', ')}</div>
+            <div class="status ${build.status}">状态: ${build.status}</div>
+            <button onclick="selectBuild('${build.id}')">查看日志</button>
+        `;
+        container.appendChild(card);
+    });
+}
+
+async function loadLogs() {
+    if (!currentBuildId) return;
+    const res = await fetch(`/api/builds/${currentBuildId}/logs`);
+    const data = await res.json();
+    const logs = document.getElementById('logs');
+    logs.textContent = data.logs.map(item => `[${item.timestamp}] ${item.message}`).join('\n');
+    logs.scrollTop = logs.scrollHeight;
+}
+
+function selectBuild(buildId) {
+    currentBuildId = buildId;
+    loadLogs();
+}
+
+function pickDirectory() {
+    document.getElementById('dir-picker').click();
+}
+
+function handleDirectorySelection(event) {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+    const dir = files[0].webkitRelativePath.split('/')[0];
+    document.getElementById('project-dir').value = dir;
+}
+
+document.getElementById('dir-picker').addEventListener('change', handleDirectorySelection);
+
+setInterval(() => {
+    checkDockerStatus();
+    loadBuilds();
+    loadLogs();
+}, 3000);
+
+checkDockerStatus();
+loadPlatforms();
+loadBuilds();
+</script>
+</body>
+</html>
