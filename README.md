@@ -43,7 +43,7 @@
 ### 方式 2：直接运行 EXE
 
 1. 从 [Releases](https://github.com/eric6227/DockerAutoBuilder/releases) 下载最新版本
-2. 解压后运行 `DockerAutoBuilder.exe`
+2. 运行 `DockerAutoBuilder.exe`
 3. 无需安装 Python 环境
 
 ### 方式 3：源码运行
